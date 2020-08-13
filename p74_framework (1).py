@@ -5,8 +5,6 @@ import tensorflow as tf
 import numpy as np
 from tensorflow.examples.tutorials.mnist.input_data import read_data_sets
 import os
-from tornado import web
-
 
 
 def get_gpus():
@@ -33,7 +31,6 @@ class Config:
         self.logdir = '../logs/{name}'.format(name=self.get_name())
         self.new_model = False
         self.gpus = get_gpus()
-        self.stopped = False
 
     def get_name(self):
         raise Exception('get_name() is not re-defined.')
@@ -156,7 +153,7 @@ class Tensors:
 
     def get_grads_mean(self, grads, loss_idx):
         # grads: [gpus, losses]
-        grads = [gs[loss_idx] for gs in grads]  # [gpus, vars, 2]
+        grads = [gs[loss_idx] for gs in grads]  # [gpus]
         gpus = len(grads)
 
         vars = [pair[1] for pair in grads[0]]
@@ -164,10 +161,9 @@ class Tensors:
         for i, var in enumerate(vars):
             g = grads[0][i][0]
             if isinstance(g, tf.IndexedSlices):
-                values = [gs[i][0].values/gpus for gs in grads]  # [gpus, -1, 200]
-                values = tf.concat(values, axis=0)  # [-1, 200]
-                indices = [gs[i][0].indices for gs in grads]  # [gpus, -1]
-                indices = tf.concat(indices, axis=0)  # [-1]
+                slices = [(v/gpus, i) for v, i in zip(gs[i][0].values, gs[i][0].indices) for gs in grads]
+                values = [v for v, _ in slices]
+                indices = [i for _, i in slices]
                 result.append((tf.IndexedSlices(values, indices), var))
             else:
                 result.append((tf.reduce_mean([gs[i][0] for gs in grads], axis=0), var))
@@ -210,10 +206,8 @@ class App:
         ts  = self.ts
         writer = tf.summary.FileWriter(cfg.logdir, self.session.graph)
         batches = ds_train.num_examples // (cfg.batch_size * cfg.gpus)
-        epoch = 0
-        batch = 0
-        while epoch < cfg.epoches and not cfg.stopped:
-            epoch += 1
+
+        for epoch in range(cfg.epoches):
             self.before_epoch(epoch)
             for batch in range(batches):
                 self.before_batch(epoch, batch)

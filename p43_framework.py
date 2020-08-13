@@ -5,8 +5,6 @@ import tensorflow as tf
 import numpy as np
 from tensorflow.examples.tutorials.mnist.input_data import read_data_sets
 import os
-from tornado import web
-
 
 
 def get_gpus():
@@ -33,7 +31,6 @@ class Config:
         self.logdir = '../logs/{name}'.format(name=self.get_name())
         self.new_model = False
         self.gpus = get_gpus()
-        self.stopped = False
 
     def get_name(self):
         raise Exception('get_name() is not re-defined.')
@@ -64,36 +61,9 @@ class Config:
                                     action='store_%s' % ('false' if value else 'true'))
             else:
                 parser.add_argument('--' + attr, type=t, default=value, help='Default to %s' % value)
-        parser.add_argument('--call', type=str, default='train', help='Call method, by default call train()')
         a = parser.parse_args()
         for attr in attrs:
             setattr(self, attr, getattr(a, attr))
-
-        self.call(a.call)
-
-    def call(self, name):
-        if name=='train':
-            self.train()
-        elif name == 'test':
-            self.test()
-        else:
-            print('Unknow method name ' + name, flush=True)
-
-    def train(self):
-        app = self.get_app()
-        with app:
-            app.train(self.get_ds_train(), None)
-
-    def get_ds_train(self):
-        raise Exception('get_ds_train() is not defined.')
-
-    def test(self):
-        app = self.get_app()
-        with app:
-            app.test(self.get_ds_test())
-
-    def get_ds_test(self):
-        raise Exception('get_ds_test() is not defined.')
 
     def get_tensors(self):
         return Tensors(self)
@@ -156,21 +126,11 @@ class Tensors:
 
     def get_grads_mean(self, grads, loss_idx):
         # grads: [gpus, losses]
-        grads = [gs[loss_idx] for gs in grads]  # [gpus, vars, 2]
-        gpus = len(grads)
-
+        grads = [gs[loss_idx] for gs in grads]  # [gpus]
         vars = [pair[1] for pair in grads[0]]
         result = []
         for i, var in enumerate(vars):
-            g = grads[0][i][0]
-            if isinstance(g, tf.IndexedSlices):
-                values = [gs[i][0].values/gpus for gs in grads]  # [gpus, -1, 200]
-                values = tf.concat(values, axis=0)  # [-1, 200]
-                indices = [gs[i][0].indices for gs in grads]  # [gpus, -1]
-                indices = tf.concat(indices, axis=0)  # [-1]
-                result.append((tf.IndexedSlices(values, indices), var))
-            else:
-                result.append((tf.reduce_mean([gs[i][0] for gs in grads], axis=0), var))
+            result.append((tf.reduce_mean([gs[i][0] for gs in grads], axis=0), var))
         return result
 
 
@@ -199,7 +159,7 @@ class App:
         self.session.close()
 
     def __enter__(self):
-        return self
+        pass
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
@@ -210,10 +170,8 @@ class App:
         ts  = self.ts
         writer = tf.summary.FileWriter(cfg.logdir, self.session.graph)
         batches = ds_train.num_examples // (cfg.batch_size * cfg.gpus)
-        epoch = 0
-        batch = 0
-        while epoch < cfg.epoches and not cfg.stopped:
-            epoch += 1
+
+        for epoch in range(cfg.epoches):
             self.before_epoch(epoch)
             for batch in range(batches):
                 self.before_batch(epoch, batch)
@@ -222,7 +180,7 @@ class App:
                     _, summary = self.session.run([ts.train_ops[0], ts.summary], feed_dict)
                 else:
                     for train_op in ts.train_ops:
-                        self.session.run(train_op, feed_dict)
+                        self.session.run([train_op, feed_dict])
                     summary = self.session.run(ts.summary, feed_dict)
                 writer.add_summary(summary, epoch * batches + batch)
                 self.after_batch(epoch, batch)
